@@ -1,9 +1,4 @@
 #include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <DHT.h>
-#include <ESP32Servo.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 
@@ -15,48 +10,53 @@ const char* password = "bulangeu";
 const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 
-// I VOSTRI DUE CANALI (TOPIC) SEPARATI:
-const char* topic_allarme = "ITS/mattia_moustakim/allarme";
-const char* topic_sensori = "ITS/mattia_moustakim/sensori";
+// -------- I 3 TOPIC UFFICIALI --------
+const char* topic_eventi = "pillmate/disp_01/eventi";
+const char* topic_sensori = "pillmate/disp_01/telemetria";
+const char* topic_comandi = "pillmate/disp_01/comandi";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Variabile per il cronometro dei sensori (per mandare i dati ogni 5 secondi)
 unsigned long ultimoInvioSensori = 0;
 
-// -------- OLED --------
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// Il bottone fisico "BOOT" sulla scheda ESP32 è sul pin 0
+#define BOOT_BTN 0
+int lastBtnState = HIGH;
 
-// -------- DHT22 --------
-#define DHTPIN 15
-#define DHTTYPE DHT22
-DHT dht(DHTPIN, DHTTYPE);
+// --- FUNZIONE DI RICEZIONE COMANDI DAL WEB ---
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("\n[MQTT] Messaggio arrivato dal Web sul topic: ");
+  Serial.println(topic);
 
-// -------- DEFINIZIONE PIN --------
-#define LED1 18
-#define LED2 19
-#define BTN1 4
-#define BTN2 5
-#define SERVO_PIN 13
-#define BUZZER 23
-#define PIR_PIN 27
+  String messaggio = "";
+  for (int i = 0; i < length; i++) {
+    messaggio += (char)payload[i];
+  }
+  Serial.print("[MQTT] Comando ricevuto: ");
+  Serial.println(messaggio);
 
-Servo myServo;
-int lastPirState = LOW;
+  // Se il sito manda il comando "eroga_ora"
+  if (messaggio == "eroga_ora") {
+    Serial.println(">>> AZIONE: Il medico ha forzato l'erogazione da remoto! <<<");
+    // Quando avrai collegato il servo, qui scriverai: myServo.write(90);
+  }
+}
 
 // --- FUNZIONE PER CONNETTERSI AL SERVER MQTT ---
 void reconnect() {
   while (!client.connected() && WiFi.status() == WL_CONNECTED) {
     Serial.print("Tentativo di connessione a MQTT (HiveMQ)...");
 
-    String clientId = "ESP32Client-";
+    String clientId = "ESP32Client-TEST-";
     clientId += String(random(0xffff), HEX);
 
     if (client.connect(clientId.c_str())) {
       Serial.println(" ✅ Connesso a MQTT!");
+
+      // APPENA CONNESSO, MI ISCRIVO AL CANALE DEI COMANDI
+      client.subscribe(topic_comandi);
+
     } else {
       Serial.print(" Fallito, errore=");
       Serial.print(client.state());
@@ -70,24 +70,12 @@ void reconnect() {
 void setup() {
   Serial.begin(115200);
 
-  // OLED Inizializzazione
-  Wire.begin(21, 22);
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("Errore OLED");
-    while(true);
-  }
-  display.clearDisplay();
-  display.setTextColor(1);
-  display.setTextSize(1);
+  // Imposto il bottone BOOT come input
+  pinMode(BOOT_BTN, INPUT_PULLUP);
 
   // --- CONNESSIONE WIFI ---
-  Serial.print("Connessione al WiFi: ");
+  Serial.print("\nConnessione al WiFi: ");
   Serial.println(ssid);
-
-  display.setCursor(0,10);
-  display.println("Connessione WiFi...");
-  display.println(ssid);
-  display.display();
 
   WiFi.begin(ssid, password);
 
@@ -100,124 +88,54 @@ void setup() {
   Serial.print("Indirizzo IP: ");
   Serial.println(WiFi.localIP());
 
-  display.clearDisplay();
-  display.setCursor(0,20);
-  display.println("WIFI CONNESSO!");
-  display.display();
-  delay(2000);
-
-  // --- CONFIGURO IL SERVER MQTT ---
+  // --- CONFIGURO IL SERVER MQTT E L'ASCOLTO ---
   client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback); // Dico all'ESP32 di usare la funzione callback
 
-  // DHT
-  dht.begin();
-
-  // Pin
-  pinMode(LED1, OUTPUT);
-  pinMode(LED2, OUTPUT);
-  pinMode(BUZZER, OUTPUT);
-  pinMode(PIR_PIN, INPUT);
-  pinMode(BTN1, INPUT_PULLUP);
-  pinMode(BTN2, INPUT_PULLUP);
-
-  // Servo
-  myServo.setPeriodHertz(50);
-  myServo.attach(SERVO_PIN, 500, 2400);
-  myServo.write(0);
-
-  Serial.println("Sistema avviato e pronto!");
+  Serial.println("Sistema di TEST avviato! In attesa di inviare/ricevere dati...");
 }
 
 // -------- LOOP --------
 void loop() {
-
   // MANTIENI VIVA LA CONNESSIONE MQTT
   if (!client.connected() && WiFi.status() == WL_CONNECTED) {
     reconnect();
   }
-  client.loop();
+  client.loop(); // FONDAMENTALE per ricevere i messaggi in tempo reale
 
-  // Lettura DHT
-  float temp = dht.readTemperature();
-  float hum = dht.readHumidity();
-
-  if (isnan(temp) || isnan(hum)) {
-    Serial.println("Errore lettura DHT!");
-    delay(2000);
-    return;
-  }
-
-  // 🔥 NOVITÀ: INVIO DATI SENSORI OGNI 5 SECONDI 🔥
+  // 🔥 INVIO DATI SENSORI(FINTI) DA MODIFICARE CON DATI REALI
   unsigned long tempoAttuale = millis();
-  // Controlla se sono passati 5000 millisecondi (5 secondi) dall'ultimo invio
   if (tempoAttuale - ultimoInvioSensori > 5000) {
-    ultimoInvioSensori = tempoAttuale; // Riavvia il cronometro
+    ultimoInvioSensori = tempoAttuale;
 
     if (client.connected()) {
-      // Prepara la frase con i gradi e l'umidità
-      String pacchetto = "Temp: " + String(temp) + "C | Umidita: " + String(hum) + "%";
+      // Creo un pacchetto JSON finto
+      String pacchettoJSON = "{\"temperatura\": 24.5, \"umidita\": 55.0}";
 
-      // Spedisce il messaggio sul canale "sensori"
-      client.publish(topic_sensori, pacchetto.c_str());
-      Serial.println("--> Dati meteo spediti al Web!");
+      client.publish(topic_sensori, pacchettoJSON.c_str());
+      Serial.println("--> Telemetria inviata: " + pacchettoJSON);
     }
   }
 
-  // OLED - Schermata principale
-  display.clearDisplay();
-  display.setCursor(0,0);
+  // --- SIMULAZIONE SENS. MOVIMENTO (Pulsante BOOT) ---
+  int currentBtnState = digitalRead(BOOT_BTN);
 
-  if(WiFi.status() == WL_CONNECTED) {
-    display.println("          WiFi: OK");
-  } else {
-    display.println("          WiFi: NO");
-  }
+  // Se premi il tasto BOOT (va LOW) e prima non lo era
+  if (currentBtnState == LOW && lastBtnState == HIGH) {
+    Serial.println("\nTasto BOOT premuto! Simulo l'erogazione...");
 
-  display.print("Temp: ");
-  display.print(temp);
-  display.println(" C");
-  display.print("Hum:  ");
-  display.print(hum);
-  display.println(" %");
-
-  // --- PIR (Sensore Movimento) ---
-  int currentPirState = digitalRead(PIR_PIN);
-
-  if (currentPirState == HIGH && lastPirState == LOW) {
-    Serial.println("Movimento rilevato! Erogazione...");
-
-    display.println("\nMOVIMENTO!");
-    display.display();
-
-    digitalWrite(BUZZER, HIGH);
-    myServo.write(90);
-
-    // 🔥 INVIO IL MESSAGGIO DI ALLARME SUL CANALE DEDICATO 🔥
     if (client.connected()) {
-      client.publish(topic_allarme, "Allarme: Movimento Rilevato! Pillola Erogata.");
-      Serial.println("--> Messaggio di allarme spedito!");
+      // Creo un pacchetto JSON per l'allarme
+      String allarmeJSON = "{\"seriale\": \"disp_01\", \"azione\": \"pillola_erogata\"}";
+
+      client.publish(topic_eventi, allarmeJSON.c_str());
+      Serial.println("--> Messaggio Evento inviato!");
     }
 
-    delay(1000);
-
-    digitalWrite(BUZZER, LOW);
-    myServo.write(0);
+    // Evita i rimbalzi del tasto
+    delay(300);
   }
-  lastPirState = currentPirState;
+  lastBtnState = currentBtnState;
 
-  // --- Pulsanti -> LED ---
-  if (digitalRead(BTN1) == LOW) {
-    digitalWrite(LED1, HIGH);
-  } else {
-    digitalWrite(LED1, LOW);
-  }
-
-  if (digitalRead(BTN2) == LOW) {
-    digitalWrite(LED2, HIGH);
-  } else {
-    digitalWrite(LED2, LOW);
-  }
-
-  display.display();
-  delay(100);
+  delay(50);
 }
